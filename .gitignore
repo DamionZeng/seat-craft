@@ -1,0 +1,48 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 构建产物
+dist/
+dist-ssr/
+.vite/
+coverage/
+*.tsbuildinfo
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# 本地临时文件与缓存
+.tmp/
+.cache/
+*.local
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 环境变量（如需示例可提交 .env.example）
+.env
+.env.*
+!.env.example
+
+# 编辑器与系统文件
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+Thumbs.db
+desktop.ini
+.trae/
+
+# 安装包与导出文件
+*.msi
+*.exe
+*.dmg
+*.AppImage
+*.deb
