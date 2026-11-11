@@ -7,7 +7,6 @@ import {
   EyeOff,
   Info,
   Loader2,
-  RotateCcw,
   ShieldCheck,
   Sparkles,
   TriangleAlert,
@@ -25,8 +24,6 @@ export function SettingsDialog() {
   const aiBusy = useAppStore((s) => s.aiBusy);
   const aiError = useAppStore((s) => s.aiError);
   const semanticMode = useAppStore((s) => s.semanticMode);
-  const resetDemo = useAppStore((s) => s.resetDemo);
-  const notify = useAppStore((s) => s.notify);
 
   const [showKey, setShowKey] = useState(false);
 
@@ -171,26 +168,6 @@ export function SettingsDialog() {
         <section>
           <h3 className="mb-2 text-[12.5px] font-semibold">本地数据</h3>
           <div className="rounded-[14px] border border-line bg-white px-4 py-3">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="text-[11.5px] font-medium">重新载入示例班级</div>
-                <p className="mt-0.5 text-[10px] text-muted-foreground">
-                  清空当前编辑，恢复 40 人示例名单与默认布局。
-                </p>
-              </div>
-              <button
-                className="btn btn-soft h-8 shrink-0 text-[11px]"
-                onClick={() => {
-                  if (window.confirm('将清空当前排座与名单，恢复示例数据，确定继续？')) {
-                    resetDemo();
-                    notify('已恢复示例班级', 'success');
-                  }
-                }}
-              >
-                <RotateCcw size={12} /> 恢复示例
-              </button>
-            </div>
-            <div className="my-2.5 h-px bg-line" />
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-[11.5px] font-medium">清空本地缓存</div>

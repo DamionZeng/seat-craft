@@ -20,12 +20,6 @@ import {
 } from '../lib/semantics';
 import { DEFAULT_RULES } from '../lib/rules';
 import {
-  DEMO_CLASS_NAME,
-  DEMO_LAYOUT,
-  DEMO_RULES,
-  createDemoStudents,
-} from '../data/demo';
-import {
   localRepository,
   loadVersions,
   saveVersions,
@@ -129,7 +123,6 @@ interface AppStore {
   applyAiSemantics: () => Promise<void>;
   notify: (text: string, tone?: ToastMessage['tone']) => void;
   dismissToast: (id: string) => void;
-  resetDemo: () => void;
 }
 
 let requestSeq = 0;
@@ -173,17 +166,6 @@ async function runSolver(input: SolveInput): Promise<SolveResult> {
   });
 }
 
-function hydrate(students: Student[]): Student[] {
-  return students.map((s) => ({
-    ...s,
-    traits: s.traits?.length ? s.traits : [],
-  }));
-}
-
-function demoStudents(): Student[] {
-  return hydrate(createDemoStudents());
-}
-
 const persisted = localRepository.load();
 
 const initial = persisted
@@ -197,10 +179,16 @@ const initial = persisted
       view: persisted.view,
     }
   : {
-      className: DEMO_CLASS_NAME,
-      students: demoStudents(),
-      layout: DEMO_LAYOUT,
-      rules: DEMO_RULES,
+      className: '未命名班级',
+      students: [] as Student[],
+      layout: {
+        rows: 5,
+        groups: 4,
+        deskType: 'double',
+        podiumSide: 'top',
+        blocked: [],
+      } as LayoutConfig,
+      rules: DEFAULT_RULES.map((rule) => ({ ...rule })),
       assignment: {} as Assignment,
       aiSettings: DEFAULT_AI_SETTINGS,
       view: 'teacher' as const,
@@ -726,27 +714,6 @@ export const useAppStore = create<AppStore>()((set, get) => ({
   },
 
   dismissToast: (id) => set({ toasts: get().toasts.filter((t) => t.id !== id) }),
-
-  resetDemo: () => {
-    const students = demoStudents();
-    const analysis = analyze(students, DEMO_LAYOUT, DEMO_RULES, {});
-    set({
-      className: DEMO_CLASS_NAME,
-      students,
-      layout: DEMO_LAYOUT,
-      rules: DEMO_RULES,
-      assignment: {},
-      score: analysis.score,
-      satisfactions: analysis.satisfactions,
-      reasons: analysis.reasons,
-      complement: analysis.complement,
-      clusters: buildLocalClusters(students),
-      past: [],
-      future: [],
-      manualSlots: {},
-      semanticMode: 'local',
-    });
-  },
 }));
 
 let saveTimer: number | undefined;

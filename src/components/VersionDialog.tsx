@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { History, RotateCcw, Save, Trash2, UsersRound } from 'lucide-react';
 import { MAX_VERSIONS, useAppStore } from '../store/useAppStore';
 import { Modal } from './ui';
@@ -9,6 +9,8 @@ function formatTime(ts: number) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+type PendingAction = { type: 'restore' | 'delete'; id: string; name: string };
+
 export function VersionDialog() {
   const open = useAppStore((s) => s.versionsOpen);
   const setOpen = useAppStore((s) => s.setVersionsOpen);
@@ -18,10 +20,35 @@ export function VersionDialog() {
   const deleteVersion = useAppStore((s) => s.deleteVersion);
 
   const [name, setName] = useState('');
+  const [pending, setPending] = useState<PendingAction | null>(null);
+
+  useEffect(() => {
+    if (!open) setPending(null);
+  }, [open]);
+
+  // 确认层打开时拦截 Esc，避免直接关掉整个版本面板
+  useEffect(() => {
+    if (!pending) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      setPending(null);
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [pending]);
 
   const save = () => {
     saveVersion(name);
     setName('');
+  };
+
+  const confirm = () => {
+    if (!pending) return;
+    if (pending.type === 'restore') restoreVersion(pending.id);
+    else deleteVersion(pending.id);
+    setPending(null);
   };
 
   return (
@@ -100,21 +127,17 @@ export function VersionDialog() {
                   </div>
                   <button
                     className="btn btn-soft shrink-0"
-                    onClick={() => {
-                      if (window.confirm(`回退到「${version.name}」？当前未保存的调整会被覆盖。`)) {
-                        restoreVersion(version.id);
-                      }
-                    }}
+                    onClick={() =>
+                      setPending({ type: 'restore', id: version.id, name: version.name })
+                    }
                   >
                     <RotateCcw size={12} /> 回退
                   </button>
                   <button
                     className="btn btn-danger shrink-0"
-                    onClick={() => {
-                      if (window.confirm(`删除版本「${version.name}」？此操作不可撤销。`)) {
-                        deleteVersion(version.id);
-                      }
-                    }}
+                    onClick={() =>
+                      setPending({ type: 'delete', id: version.id, name: version.name })
+                    }
                   >
                     <Trash2 size={12} /> 删除
                   </button>
@@ -124,6 +147,60 @@ export function VersionDialog() {
           )}
         </section>
       </div>
+
+      {pending && (
+        <div
+          className="absolute inset-0 z-30 grid place-items-center rounded-[20px] bg-ink/25 px-6 backdrop-blur-[2px]"
+          onClick={() => setPending(null)}
+        >
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="version-confirm-title"
+            className="w-full max-w-[380px] rounded-[16px] border border-line bg-popover p-5 shadow-[0_24px_60px_rgba(16,24,40,0.22)] animate-in fade-in-0 zoom-in-95 duration-150"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <span
+                className={`grid size-9 shrink-0 place-items-center rounded-full ${
+                  pending.type === 'delete'
+                    ? 'bg-danger-soft text-danger'
+                    : 'bg-primary-soft text-primary'
+                }`}
+              >
+                {pending.type === 'delete' ? <Trash2 size={16} /> : <RotateCcw size={16} />}
+              </span>
+              <div className="min-w-0 pt-0.5">
+                <h3
+                  id="version-confirm-title"
+                  className="text-[14px] font-semibold tracking-[-0.01em] text-ink"
+                >
+                  {pending.type === 'delete' ? '删除这个版本？' : '回退到这个版本？'}
+                </h3>
+                <p className="mt-1 truncate text-[12px] text-muted-foreground">{pending.name}</p>
+              </div>
+            </div>
+
+            <p className="mt-3 text-[11.5px] leading-relaxed text-muted-foreground">
+              {pending.type === 'delete'
+                ? '该快照将从本机永久删除，不会影响当前排座方案。'
+                : '当前未保存的调整会被覆盖，回退后撤销/重做记录也会清空。'}
+            </p>
+
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button className="btn btn-soft" onClick={() => setPending(null)}>
+                取消
+              </button>
+              <button
+                className={pending.type === 'delete' ? 'btn btn-danger' : 'btn btn-primary'}
+                onClick={confirm}
+              >
+                {pending.type === 'delete' ? '确认删除' : '确认回退'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </Modal>
   );
 }
