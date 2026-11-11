@@ -120,7 +120,12 @@ export function SeatCard({
     return (
       <div
         ref={droppable.setNodeRef}
-        className="seat seat-blocked flex flex-col items-center justify-center text-muted-foreground"
+        id={`seat-${slot.id}`}
+        onClick={onSelect}
+        title="禁区 · 点击可取消"
+        className={`seat seat-blocked flex cursor-pointer flex-col items-center justify-center text-muted-foreground ${
+          selected ? 'seat-selected' : ''
+        }`}
         style={{ width: 'var(--seat-w)', height: 'var(--seat-h)' }}
       >
         <span className="text-[10px] tracking-[0.08em]">禁区</span>

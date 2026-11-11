@@ -13,6 +13,7 @@ import { matchStudents, ruleTitle } from './rules';
 import {
   analyzeAssignment,
   buildContext,
+  genderMixStats,
   isSoftRule,
   makeState,
   softScore,
@@ -63,7 +64,7 @@ export function solve(input: SolveInput): SolveResult {
   const { students, slots, rules, layout, complement, seed } = input;
   const ctx = buildContext(students, slots, rules, layout, complement);
   const graph = ctx.graph;
-  const usableSlots = graph.slots.filter((s) => !s.blocked);
+  let usableSlots = graph.slots.filter((s) => !s.blocked);
   const conflicts: string[] = [];
   const warnings: string[] = [];
 
@@ -82,6 +83,29 @@ export function solve(input: SolveInput): SolveResult {
   const mustAvoidMap = new Map<string, Set<string>>();
   const mustPairs: [string, string][] = [];
   const studentById = new Map(students.map((s) => [s.id, s]));
+
+  // 男女同桌比例的硬约束（must 规则取交集）
+  let mixMin: number | undefined;
+  let mixMax: number | undefined;
+  for (const rule of rules) {
+    if (
+      rule.kind !== 'custom' ||
+      !rule.enabled ||
+      rule.strength !== 'must' ||
+      rule.action !== 'genderMix'
+    ) {
+      continue;
+    }
+    const limit = Math.min(1, Math.max(0, (rule.target.ratio ?? 50) / 100));
+    if (rule.target.ratioMode === 'min') mixMin = Math.max(mixMin ?? 0, limit);
+    else mixMax = Math.min(mixMax ?? 1, limit);
+  }
+  const hasMixConstraint = mixMin !== undefined || mixMax !== undefined;
+  if (mixMin !== undefined && mixMax !== undefined && mixMin > mixMax) {
+    conflicts.push(
+      `男女同桌比例规则冲突：下限 ${Math.round(mixMin * 100)}% 高于上限 ${Math.round(mixMax * 100)}%`,
+    );
+  }
 
   const addPin = (studentId: string, slotId: string, source: string) => {
     const existingSlot = pinned.get(studentId);
@@ -210,6 +234,18 @@ export function solve(input: SolveInput): SolveResult {
     return partner?.id ?? null;
   };
 
+  // 当前方案对男女同桌比例硬约束的违反程度（0 表示满足）
+  const mixViolation = (): number => {
+    if (!hasMixConstraint) return 0;
+    const { considered, mixed } = genderMixStats(state, ctx);
+    if (!considered) return 0;
+    const ratio = mixed / considered;
+    let v = 0;
+    if (mixMax !== undefined) v += Math.max(0, ratio - mixMax);
+    if (mixMin !== undefined) v += Math.max(0, mixMin - ratio);
+    return v;
+  };
+
   // 1) 落固定座位
   for (const [studentId, slotId] of pinned) place(studentId, slotId);
 
@@ -296,6 +332,38 @@ export function solve(input: SolveInput): SolveResult {
     return false;
   };
 
+  // 座位多于学生时，只使用最靠前的座位，保证空位集中在后排
+  if (students.length < usableSlots.length) {
+    const ordered = [...usableSlots].sort((a, b) => a.row - b.row || a.col - b.col);
+    const keep = new Set(ordered.slice(0, students.length).map((s) => s.id));
+    for (const slotId of pinned.values()) keep.add(slotId);
+    if (keep.size > students.length) {
+      const removable = ordered.filter((s) => keep.has(s.id) && !pinnedSlots.has(s.id)).reverse();
+      for (const slot of removable) {
+        if (keep.size <= students.length) break;
+        keep.delete(slot.id);
+      }
+    }
+    const compact = usableSlots.filter((s) => keep.has(s.id));
+    const zones: Zone[] = ['front', 'middle', 'back', 'window', 'door'];
+    const capacityOk = zones.every((zone) => {
+      const affected = students.filter((student) =>
+        forbiddenZones.get(student.id)?.has(zone),
+      ).length;
+      return affected <= compact.filter((slot) => !slot.zones.includes(zone)).length;
+    });
+    const feasible =
+      capacityOk &&
+      students.every((student) =>
+        compact.some(
+          (slot) =>
+            !(isVeryTall(student) && slot.row <= 2) &&
+            ![...(forbiddenZones.get(student.id) ?? [])].some((z) => slot.zones.includes(z)),
+        ),
+      );
+    if (feasible) usableSlots = compact;
+  }
+
   const freeSlots = () =>
     usableSlots.filter((s) => !state.slotToStudent.has(s.id));
 
@@ -361,15 +429,9 @@ export function solve(input: SolveInput): SolveResult {
   // 4) 模拟退火局部优化
   const iterations = input.maxIterations ?? 6000;
   const budget = input.timeBudget ?? 750;
-  let currentScore = softScore(state, ctx);
-  let bestAssignment = stateToAssignment(state);
-  let bestScore = currentScore;
-  let temperature = 0.03;
-  const cooling = Math.pow(0.0005 / temperature, 1 / iterations);
   const occupied = usableSlots.map((s) => s.id).filter((id) => state.slotToStudent.has(id));
   const pinnedStudents = new Set(pinned.keys());
   const mustPairStudents = new Set(mustPairs.flat());
-  let done = 0;
 
   const swapAllowed = (slotA: string, slotB: string): boolean => {
     const aId = state.slotToStudent.get(slotA);
@@ -388,6 +450,38 @@ export function solve(input: SolveInput): SolveResult {
     return true;
   };
 
+  // 男女同桌比例硬约束：先做局部交换修复，让初始解进入可行区间
+  if (hasMixConstraint) {
+    let guard = 0;
+    while (mixViolation() > 1e-9 && guard++ < 4000 && occupied.length > 1) {
+      const iA = Math.floor(rng() * occupied.length);
+      const iB = Math.floor(rng() * occupied.length);
+      if (iA === iB) continue;
+      const slotA = occupied[iA];
+      const slotB = occupied[iB];
+      if (!swapAllowed(slotA, slotB)) continue;
+      const aId = state.slotToStudent.get(slotA)!;
+      const bId = state.slotToStudent.get(slotB)!;
+      const before = mixViolation();
+      state.slotToStudent.set(slotA, bId);
+      state.slotToStudent.set(slotB, aId);
+      state.studentToSlot.set(aId, slotB);
+      state.studentToSlot.set(bId, slotA);
+      if (mixViolation() < before - 1e-12) continue;
+      state.slotToStudent.set(slotA, aId);
+      state.slotToStudent.set(slotB, bId);
+      state.studentToSlot.set(aId, slotA);
+      state.studentToSlot.set(bId, slotB);
+    }
+  }
+
+  let currentScore = softScore(state, ctx);
+  let bestAssignment = stateToAssignment(state);
+  let bestScore = currentScore;
+  let temperature = 0.03;
+  const cooling = Math.pow(0.0005 / temperature, 1 / iterations);
+  let done = 0;
+
   for (let i = 0; i < iterations; i++) {
     if ((i & 127) === 0 && performance.now() - started > budget) break;
     done = i + 1;
@@ -399,13 +493,15 @@ export function solve(input: SolveInput): SolveResult {
     if (!swapAllowed(slotA, slotB)) continue;
     const aId = state.slotToStudent.get(slotA)!;
     const bId = state.slotToStudent.get(slotB)!;
+    const mixBefore = hasMixConstraint ? mixViolation() : 0;
     state.slotToStudent.set(slotA, bId);
     state.slotToStudent.set(slotB, aId);
     state.studentToSlot.set(aId, slotB);
     state.studentToSlot.set(bId, slotA);
+    const mixOk = !hasMixConstraint || mixViolation() <= mixBefore + 1e-9;
     const nextScore = softScore(state, ctx);
     const delta = nextScore - currentScore;
-    if (delta >= 0 || rng() < Math.exp(delta / temperature)) {
+    if (mixOk && (delta >= 0 || rng() < Math.exp(delta / temperature))) {
       currentScore = nextScore;
       if (nextScore > bestScore + 1e-9) {
         bestScore = nextScore;
@@ -420,12 +516,59 @@ export function solve(input: SolveInput): SolveResult {
     temperature = clamp(temperature * cooling, 0.0005, 0.03);
   }
 
+  // 空位后置：座位多于学生时，在同一列内整体前移，让空位集中到后排
+  const compactEmptySeats = () => {
+    if (students.length >= usableSlots.length) return;
+    const movable = (id: string) => !pinnedStudents.has(id) && !mustPairStudents.has(id);
+    const cols = [...new Set(usableSlots.map((s) => s.col))];
+    for (const col of cols) {
+      const column = usableSlots
+        .filter((s) => s.col === col)
+        .sort((a, b) => a.row - b.row);
+      const occupied = column.filter((s) => state.slotToStudent.has(s.id));
+      if (occupied.length === column.length) continue;
+      const moves = occupied
+        .map((slot, i) => ({
+          studentId: state.slotToStudent.get(slot.id)!,
+          from: slot.id,
+          to: column[i].id,
+        }))
+        .filter((m) => m.from !== m.to);
+      if (!moves.length) continue;
+      if (moves.some((m) => !movable(m.studentId))) continue;
+      const before = softScore(state, ctx);
+      const mixBefore = mixViolation();
+      for (const m of moves) {
+        state.slotToStudent.delete(m.from);
+        state.studentToSlot.delete(m.studentId);
+      }
+      for (const m of moves) {
+        state.slotToStudent.set(m.to, m.studentId);
+        state.studentToSlot.set(m.studentId, m.to);
+      }
+      const invalid = moves.some((m) => hardInvalid(m.studentId, m.to));
+      const after = softScore(state, ctx);
+      if (invalid || after < before - 1e-9 || mixViolation() > mixBefore + 1e-9) {
+        for (const m of moves) {
+          state.slotToStudent.delete(m.to);
+          state.studentToSlot.delete(m.studentId);
+        }
+        for (const m of moves) {
+          state.slotToStudent.set(m.from, m.studentId);
+          state.studentToSlot.set(m.studentId, m.from);
+        }
+      }
+    }
+  };
+
   // 恢复到历史最优
   const finalState = makeState(bestAssignment);
   state.slotToStudent = finalState.slotToStudent;
   state.studentToSlot = finalState.studentToSlot;
 
-  const analysis = analyzeAssignment(bestAssignment, ctx);
+  compactEmptySeats();
+  const finalAssignment = stateToAssignment(state);
+  const analysis = analyzeAssignment(finalAssignment, ctx);
 
   for (const sat of analysis.satisfactions) {
     if (sat.kind === 'custom' && sat.sat < 0.999) {
@@ -440,7 +583,7 @@ export function solve(input: SolveInput): SolveResult {
     ok: true,
     conflicts: [],
     warnings: [...new Set(warnings)],
-    assignment: bestAssignment,
+    assignment: finalAssignment,
     score: analysis.score,
     satisfactions: analysis.satisfactions,
     reasons: analysis.reasons,

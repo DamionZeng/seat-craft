@@ -21,12 +21,6 @@ export const BUILTIN_META: Record<
     weight: 70,
     enabled: true,
   },
-  gender: {
-    name: '男女搭配',
-    desc: '双人桌优先一男一女同桌；单人桌退化为左右相邻交替',
-    weight: 60,
-    enabled: true,
-  },
   trait: {
     name: '特点互补',
     desc: '性格行为差异互补、学习强弱配对，由语义引擎提供分数',
@@ -68,9 +62,15 @@ export const DEFAULT_RULES: Rule[] = (
   Object.keys(BUILTIN_META) as BuiltinRuleId[]
 ).map(createBuiltinRule);
 
+/** 过滤历史存档中已下线的内置规则（如旧的「男女搭配」） */
+export function sanitizeRules(rules: Rule[]): Rule[] {
+  return rules.filter(
+    (rule) => !(rule.kind === 'builtin' && (rule.builtin as string) === 'gender'),
+  );
+}
+
 export const BUILTIN_NAME: Record<BuiltinRuleId, string> = {
   height: BUILTIN_META.height.name,
-  gender: BUILTIN_META.gender.name,
   trait: BUILTIN_META.trait.name,
   frontNeeds: BUILTIN_META.frontNeeds.name,
   tallBack: BUILTIN_META.tallBack.name,
@@ -105,6 +105,10 @@ export function ruleTitle(rule: Rule): string {
 
 export function ruleDescription(rule: Rule): string {
   if (rule.kind === 'builtin') return BUILTIN_META[rule.builtin].desc;
+  if (rule.action === 'genderMix') {
+    const ratio = Math.min(100, Math.max(0, rule.target.ratio ?? 50));
+    return `男女同桌比例${rule.target.ratioMode === 'min' ? '不低于' : '不超过'} ${ratio}%（全班）`;
+  }
   const cond = describeCondition(rule);
   const target =
     rule.action === 'preferZone' || rule.action === 'forbidZone'

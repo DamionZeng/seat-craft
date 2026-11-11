@@ -18,7 +18,7 @@ import {
   enrichTraits,
   localTraitsFromRaw,
 } from '../lib/semantics';
-import { DEFAULT_RULES } from '../lib/rules';
+import { DEFAULT_RULES, sanitizeRules } from '../lib/rules';
 import {
   localRepository,
   loadVersions,
@@ -173,7 +173,7 @@ const initial = persisted
       className: persisted.className,
       students: persisted.students,
       layout: persisted.layout,
-      rules: persisted.rules,
+      rules: sanitizeRules(persisted.rules),
       assignment: persisted.assignment,
       aiSettings: { ...DEFAULT_AI_SETTINGS, ...persisted.aiSettings },
       view: persisted.view,
@@ -632,12 +632,13 @@ export const useAppStore = create<AppStore>()((set, get) => ({
     const state = get();
     const version = state.versions.find((v) => v.id === id);
     if (!version) return;
-    const analysis = analyze(version.students, version.layout, version.rules, version.assignment);
+    const rules = sanitizeRules(version.rules);
+    const analysis = analyze(version.students, version.layout, rules, version.assignment);
     set({
       className: version.className,
       students: version.students,
       layout: version.layout,
-      rules: version.rules,
+      rules,
       assignment: version.assignment,
       score: analysis.score,
       satisfactions: analysis.satisfactions,

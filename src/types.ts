@@ -64,7 +64,6 @@ export interface Desk {
 
 export type BuiltinRuleId =
   | 'height'
-  | 'gender'
   | 'trait'
   | 'frontNeeds'
   | 'tallBack'
@@ -83,7 +82,8 @@ export type CustomAction =
   | 'deskmate'
   | 'avoidAdjacent'
   | 'preferZone'
-  | 'forbidZone';
+  | 'forbidZone'
+  | 'genderMix';
 
 export type CustomStrength = 'must' | 'strong' | 'normal';
 
@@ -110,6 +110,10 @@ export interface CustomRule {
     studentId?: string;
     zone?: Zone;
     row?: number;
+    /** 男女同桌比例阈值，0–100 */
+    ratio?: number;
+    /** max = 不超过，min = 不低于 */
+    ratioMode?: 'max' | 'min';
   };
 }
 
@@ -185,6 +189,7 @@ export const ACTION_LABEL: Record<CustomAction, string> = {
   avoidAdjacent: '不与指定学生相邻',
   preferZone: '优先安排到区域',
   forbidZone: '禁止安排到区域',
+  genderMix: '男女同桌比例',
 };
 
 export const STRENGTH_LABEL: Record<CustomStrength, string> = {

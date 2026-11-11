@@ -126,26 +126,6 @@ function satOfBuiltin(
             : '暂无足够身高数据',
       };
     }
-    case 'gender': {
-      let pairs = 0;
-      let mixed = 0;
-      for (const pair of graph.deskPairs) {
-        const sa = state.slotToStudent.get(pair.a);
-        const sb = state.slotToStudent.get(pair.b);
-        if (!sa || !sb) continue;
-        const a = byId.get(sa);
-        const b = byId.get(sb);
-        if (!a || !b || a.gender === 'unknown' || b.gender === 'unknown') continue;
-        pairs++;
-        if (a.gender !== b.gender) mixed++;
-      }
-      const sat = pairs ? mixed / pairs : 1;
-      return {
-        sat,
-        violations: pairs - mixed,
-        detail: `已被异性搭配 ${mixed} / ${pairs} 对`,
-      };
-    }
     case 'trait': {
       let sum = 0;
       let weight = 0;
@@ -237,11 +217,54 @@ function satOfBuiltin(
   }
 }
 
+/** 统计完整双人桌中的性别搭配情况（只统计性别已知的同桌） */
+export function genderMixStats(state: SeatState, ctx: ScoringContext) {
+  let considered = 0;
+  let mixed = 0;
+  for (const desk of ctx.graph.desks) {
+    const slotIds = desk.slotIds.filter((id) => !ctx.graph.byId.get(id)?.blocked);
+    if (slotIds.length < 2) continue;
+    const aId = state.slotToStudent.get(slotIds[0]);
+    const bId = state.slotToStudent.get(slotIds[1]);
+    if (!aId || !bId) continue;
+    const a = ctx.studentById.get(aId);
+    const b = ctx.studentById.get(bId);
+    if (!a || !b || a.gender === 'unknown' || b.gender === 'unknown') continue;
+    considered++;
+    if (a.gender !== b.gender) mixed++;
+  }
+  return { considered, mixed };
+}
+
 function satOfCustom(
   rule: CustomRule,
   state: SeatState,
   ctx: ScoringContext,
 ): SatResult {
+  if (rule.action === 'genderMix') {
+    const { considered, mixed } = genderMixStats(state, ctx);
+    if (!considered) {
+      return { sat: 1, detail: '当前布局没有可统计的同桌', violations: 0 };
+    }
+    const ratio = mixed / considered;
+    const limit = Math.min(1, Math.max(0, (rule.target.ratio ?? 50) / 100));
+    const isMin = rule.target.ratioMode === 'min';
+    let sat: number;
+    let violations: number;
+    if (isMin) {
+      sat = limit <= 0 ? 1 : Math.min(1, ratio / limit);
+      violations = Math.max(0, Math.round(limit * considered) - mixed);
+    } else {
+      sat = ratio <= limit ? 1 : Math.max(0, 1 - (ratio - limit) / Math.max(1e-6, 1 - limit));
+      violations = Math.max(0, mixed - Math.floor(limit * considered + 1e-9));
+    }
+    return {
+      sat,
+      violations,
+      detail: `异性同桌 ${mixed} / ${considered} 桌（${formatPercent(ratio)}），${isMin ? '下限' : '上限'} ${Math.round(limit * 100)}%`,
+    };
+  }
+
   const matched = matchStudents(rule, ctx.students);
   if (!matched.length) {
     return { sat: 1, detail: '未匹配到学生', violations: 0 };

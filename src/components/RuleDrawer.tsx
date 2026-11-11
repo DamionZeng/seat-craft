@@ -183,6 +183,22 @@ export function RuleDrawer() {
             >
               + 两人不相邻
             </button>
+            <button
+              className="rounded-full border border-line bg-white px-2.5 py-1 text-[10.5px] text-muted-foreground transition-colors hover:border-[rgba(61,90,254,0.35)] hover:text-primary"
+              onClick={() =>
+                setEditing(
+                  createCustomRule({
+                    name: '男女同桌不超过 50%',
+                    action: 'genderMix',
+                    target: { ratio: 50, ratioMode: 'max' },
+                    strength: 'strong',
+                    weight: 90,
+                  }),
+                )
+              }
+            >
+              + 男女同桌≤50%
+            </button>
           </div>
 
           {editing ? (
@@ -390,7 +406,14 @@ function CustomRuleRow({
   );
 }
 
-const ACTIONS: CustomAction[] = ['pin', 'deskmate', 'avoidAdjacent', 'preferZone', 'forbidZone'];
+const ACTIONS: CustomAction[] = [
+  'pin',
+  'deskmate',
+  'avoidAdjacent',
+  'preferZone',
+  'forbidZone',
+  'genderMix',
+];
 const ZONES: Zone[] = ['front', 'back', 'middle', 'window', 'door'];
 
 function CustomRuleEditor({
@@ -411,9 +434,20 @@ function CustomRuleEditor({
   const cols = totalCols(layout);
 
   const save = () => {
-    if (!draft.condition.value.trim() && draft.condition.field !== 'height') {
+    if (
+      draft.action !== 'genderMix' &&
+      !draft.condition.value.trim() &&
+      draft.condition.field !== 'height'
+    ) {
       setError('请填写条件值，例如学生姓名或标签');
       return;
+    }
+    if (draft.action === 'genderMix') {
+      const ratio = draft.target.ratio ?? 50;
+      if (!Number.isFinite(ratio) || ratio < 0 || ratio > 100) {
+        setError('比例需在 0–100 之间');
+        return;
+      }
     }
     if (draft.action === 'pin' && !draft.target.slotId) {
       setError('请选择目标座位');
@@ -426,9 +460,12 @@ function CustomRuleEditor({
       setError('请选择目标学生');
       return;
     }
+    const ratioText = `${draft.target.ratioMode === 'min' ? '不低于' : '不超过'} ${draft.target.ratio ?? 50}%`;
     const name =
       draft.name.trim() ||
-      `${ACTION_LABEL[draft.action]} · ${draft.condition.value || '条件'}`;
+      (draft.action === 'genderMix'
+        ? `男女同桌${ratioText}`
+        : `${ACTION_LABEL[draft.action]} · ${draft.condition.value || '条件'}`);
     onSave({
       ...draft,
       name,
@@ -443,7 +480,9 @@ function CustomRuleEditor({
         <span className="text-[12px] font-semibold">
           {initial.condition.value || initial.target.slotId ? '编辑规则' : '新建规则'}
         </span>
-        <span className="text-[10px] text-muted-foreground">最多 3 层条件 · 当前为单条件</span>
+        <span className="text-[10px] text-muted-foreground">
+          {draft.action === 'genderMix' ? '全班生效 · 无需条件' : '最多 3 层条件 · 当前为单条件'}
+        </span>
       </div>
 
       <div className="flex flex-col gap-2.5">
@@ -456,58 +495,60 @@ function CustomRuleEditor({
           />
         </Field>
 
-        <div>
-          <span className="field-label">条件</span>
-          <div className="mt-1.5 grid grid-cols-[1fr_88px_1fr] gap-1.5">
-            <select
-              className="input h-8 text-[12px]"
-              value={draft.condition.field}
-              onChange={(e) => {
-                const field = e.target.value as CustomRule['condition']['field'];
-                const op = field === 'height' ? 'gt' : field === 'trait' || field === 'note' ? 'contains' : 'eq';
-                patch({ condition: { ...draft.condition, field, op } });
-              }}
-            >
-              <option value="name">姓名</option>
-              <option value="studentNo">学号</option>
-              <option value="gender">性别</option>
-              <option value="height">身高</option>
-              <option value="trait">特点</option>
-              <option value="note">备注</option>
-            </select>
-            <select
-              className="input h-8 text-[12px]"
-              value={draft.condition.op}
-              onChange={(e) =>
-                patch({
-                  condition: {
-                    ...draft.condition,
-                    op: e.target.value as CustomRule['condition']['op'],
-                  },
-                })
-              }
-            >
-              <option value="eq">等于</option>
-              <option value="contains">包含</option>
-              <option value="gt">大于</option>
-              <option value="lt">小于</option>
-            </select>
-            <input
-              className="input h-8 text-[12px]"
-              value={draft.condition.value}
-              placeholder={
-                draft.condition.field === 'gender'
-                  ? '男 / 女'
-                  : draft.condition.field === 'height'
-                    ? '数值，如 180'
-                    : '条件值'
-              }
-              onChange={(e) =>
-                patch({ condition: { ...draft.condition, value: e.target.value } })
-              }
-            />
+        {draft.action !== 'genderMix' && (
+          <div>
+            <span className="field-label">条件</span>
+            <div className="mt-1.5 grid grid-cols-[1fr_88px_1fr] gap-1.5">
+              <select
+                className="input h-8 text-[12px]"
+                value={draft.condition.field}
+                onChange={(e) => {
+                  const field = e.target.value as CustomRule['condition']['field'];
+                  const op = field === 'height' ? 'gt' : field === 'trait' || field === 'note' ? 'contains' : 'eq';
+                  patch({ condition: { ...draft.condition, field, op } });
+                }}
+              >
+                <option value="name">姓名</option>
+                <option value="studentNo">学号</option>
+                <option value="gender">性别</option>
+                <option value="height">身高</option>
+                <option value="trait">特点</option>
+                <option value="note">备注</option>
+              </select>
+              <select
+                className="input h-8 text-[12px]"
+                value={draft.condition.op}
+                onChange={(e) =>
+                  patch({
+                    condition: {
+                      ...draft.condition,
+                      op: e.target.value as CustomRule['condition']['op'],
+                    },
+                  })
+                }
+              >
+                <option value="eq">等于</option>
+                <option value="contains">包含</option>
+                <option value="gt">大于</option>
+                <option value="lt">小于</option>
+              </select>
+              <input
+                className="input h-8 text-[12px]"
+                value={draft.condition.value}
+                placeholder={
+                  draft.condition.field === 'gender'
+                    ? '男 / 女'
+                    : draft.condition.field === 'height'
+                      ? '数值，如 180'
+                      : '条件值'
+                }
+                onChange={(e) =>
+                  patch({ condition: { ...draft.condition, value: e.target.value } })
+                }
+              />
+            </div>
           </div>
-        </div>
+        )}
 
         <div>
           <span className="field-label">动作</span>
@@ -523,7 +564,9 @@ function CustomRuleEditor({
                     ? { slotId: draft.target.slotId ?? 'r1c1' }
                     : action === 'deskmate' || action === 'avoidAdjacent'
                       ? { studentId: draft.target.studentId }
-                      : { zone: draft.target.zone ?? 'front' },
+                      : action === 'genderMix'
+                        ? { ratio: draft.target.ratio ?? 50, ratioMode: draft.target.ratioMode ?? 'max' }
+                        : { zone: draft.target.zone ?? 'front' },
               });
             }}
           >
@@ -597,6 +640,43 @@ function CustomRuleEditor({
                 </button>
               ))}
             </div>
+          </div>
+        )}
+
+        {draft.action === 'genderMix' && (
+          <div>
+            <span className="field-label">男女同桌比例</span>
+            <div className="mt-1.5 flex items-center gap-2">
+              <Segmented
+                value={draft.target.ratioMode ?? 'max'}
+                onChange={(ratioMode) =>
+                  patch({ target: { ...draft.target, ratioMode } })
+                }
+                options={[
+                  { value: 'max', label: '不超过' },
+                  { value: 'min', label: '不低于' },
+                ]}
+              />
+              <div className="relative w-24">
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={5}
+                  className="input h-8 pr-7 text-[12px]"
+                  value={draft.target.ratio ?? 50}
+                  onChange={(e) =>
+                    patch({ target: { ...draft.target, ratio: Number(e.target.value) } })
+                  }
+                />
+                <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-muted-foreground">
+                  %
+                </span>
+              </div>
+            </div>
+            <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
+              按完整双人桌统计异性同桌占比，性别未知的学生不计入；对全班生效。
+            </p>
           </div>
         )}
 
