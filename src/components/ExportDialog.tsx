@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import { Download, FileImage, FileText, Loader2 } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { Download, FileImage, FileText, Loader2, Maximize2, Minimize2, RotateCcw } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { useAppStore } from '../store/useAppStore';
 import type { Assignment, LayoutConfig, Slot, Student } from '../types';
@@ -9,24 +10,93 @@ import { Modal, Segmented, Switch } from './ui';
 import clsx from 'clsx';
 
 type Format = 'png' | 'pdf';
-type Background = 'paper' | 'white' | 'transparent';
 type ViewMode = 'teacher' | 'student';
 
-const BACKGROUNDS: { value: Background; label: string; color: string }[] = [
-  { value: 'paper', label: '纸感', color: '#F3F1EA' },
-  { value: 'white', label: '纯白', color: '#FFFFFF' },
-  { value: 'transparent', label: '透明', color: 'transparent' },
+const PAGE_COLORS = [
+  { label: '纸感', color: '#F3F1EA' },
+  { label: '纯白', color: '#FFFFFF' },
+  { label: '冷白', color: '#F5F8FD' },
+  { label: '米黄', color: '#FBF4E4' },
 ];
 
-const CATEGORY_COLOR: Record<string, string> = {
-  behavior: '#E5A23C',
-  study: '#3D5AFE',
-  personality: '#3FB68B',
-  other: '#A7A29A',
+const FONTS = [
+  {
+    value: 'system',
+    label: '系统默认',
+    stack: '"HarmonyOS Sans SC", "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif',
+  },
+  {
+    value: 'hei',
+    label: '黑体',
+    stack: '"Microsoft YaHei", "PingFang SC", "Heiti SC", sans-serif',
+  },
+  {
+    value: 'song',
+    label: '宋体',
+    stack: '"SimSun", "Songti SC", "STSong", serif',
+  },
+  {
+    value: 'kai',
+    label: '楷体',
+    stack: '"KaiTi", "STKaiti", "Kaiti SC", serif',
+  },
+  {
+    value: 'yuan',
+    label: '圆体',
+    stack: '"YouYuan", "Yuanti SC", "Microsoft YaHei", sans-serif',
+  },
+] as const;
+type FontKey = (typeof FONTS)[number]['value'];
+
+const CHECKER =
+  'repeating-conic-gradient(#e9e5da 0% 25%, #fff 0% 50%) 50% / 12px 12px';
+
+/** 门牌相对座位网格上下各外扩的距离，避免和座位落在同一行 */
+const DOOR_OFFSET = 46;
+
+type Metrics = {
+  seatW: number;
+  seatH: number;
+  nameSize: number;
+  aisle: number;
+  rowGap: number;
+  pageW: number;
+  pageH: number;
 };
 
-const SEAT_W = 104;
-const SEAT_H = 74;
+/** 按 A4 版面反推座位尺寸，保证 80 人以内单页可打印 */
+function computeMetrics(layout: LayoutConfig, header: boolean): Metrics {
+  const cols = totalCols(layout);
+  const landscape = cols / Math.max(1, layout.rows) >= 1.15;
+  const pageW = landscape ? 1414 : 1000;
+  const pageH = landscape ? 1000 : 1414;
+  const pad = 32;
+  const rowGap = 10;
+  const aisle = 26;
+  const doorRail = 56;
+  const headerH = header ? 62 : 0;
+  const podiumH = 54;
+  const footerH = 34;
+  const rowLabelW = 22;
+  const labelGap = 10;
+  const deskExtra = layout.deskType === 'double' ? 16 : 2;
+  const availW =
+    pageW -
+    pad * 2 -
+    doorRail -
+    rowLabelW -
+    labelGap -
+    aisle * (layout.groups - 1) -
+    deskExtra * layout.groups;
+  const availH =
+    pageH - pad * 2 - headerH - podiumH - footerH - DOOR_OFFSET * 2 - (layout.rows - 1) * rowGap;
+  const byW = availW / cols;
+  const byH = availH / layout.rows / 0.72;
+  const seatW = Math.max(34, Math.min(124, Math.floor(Math.min(byW, byH))));
+  const seatH = Math.round(seatW * 0.72);
+  const nameSize = Math.max(9, Math.min(16, (seatW - 12) / 4, seatW * 0.2));
+  return { seatW, seatH, nameSize, aisle, rowGap, pageW, pageH };
+}
 
 function fileStamp() {
   const d = new Date();
@@ -53,13 +123,14 @@ function el(tag: string, style: Record<string, string>, text?: string) {
 function buildSeat(
   slot: Slot,
   student: Student | undefined,
-  manual: boolean,
+  metrics: Metrics,
 ): HTMLElement {
+  const { seatW, seatH, nameSize } = metrics;
   if (slot.blocked) {
     const blocked = el('div', {
-      width: `${SEAT_W}px`,
-      height: `${SEAT_H}px`,
-      borderRadius: '12px',
+      width: `${seatW}px`,
+      height: `${seatH}px`,
+      borderRadius: '10px',
       border: '1px dashed #d9d4c7',
       backgroundColor: 'rgba(240,237,229,0.6)',
       backgroundImage:
@@ -67,8 +138,8 @@ function buildSeat(
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      color: '#6c7280',
-      fontSize: '10px',
+      color: '#8b8578',
+      fontSize: '9.5px',
       letterSpacing: '0.08em',
       boxSizing: 'border-box',
     });
@@ -80,16 +151,16 @@ function buildSeat(
     return el(
       'div',
       {
-        width: `${SEAT_W}px`,
-        height: `${SEAT_H}px`,
-        borderRadius: '12px',
-        border: '1px dashed #d5cfc1',
-        backgroundColor: 'rgba(255,255,255,0.45)',
+        width: `${seatW}px`,
+        height: `${seatH}px`,
+        borderRadius: '10px',
+        border: '1px dashed #ddd7c9',
+        backgroundColor: 'rgba(255,255,255,0.4)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        color: '#b9b3a5',
-        fontSize: '15px',
+        color: '#c4beb0',
+        fontSize: `${Math.max(10, Math.round(seatH * 0.24))}px`,
         boxSizing: 'border-box',
       },
       '+',
@@ -97,137 +168,35 @@ function buildSeat(
   }
 
   const seat = el('div', {
-    width: `${SEAT_W}px`,
-    height: `${SEAT_H}px`,
-    borderRadius: '12px',
-    border: '1px solid #eae6dc',
+    width: `${seatW}px`,
+    height: `${seatH}px`,
+    borderRadius: '10px',
+    border: '1px solid #e7e2d5',
     backgroundColor: '#ffffff',
+    boxShadow: '0 1px 2px rgba(16,24,40,0.05)',
     boxSizing: 'border-box',
-    position: 'relative',
-    display: 'flex',
-    flexDirection: 'column',
-    justifyContent: 'center',
-    padding: '0 7px 0 11px',
-    overflow: 'hidden',
-  });
-
-  const bar = el('span', {
-    position: 'absolute',
-    left: '0',
-    top: '0',
-    bottom: '0',
-    width: '3px',
-    background:
-      student.gender === 'male'
-        ? 'linear-gradient(180deg,#7BA6F5,#5B8DEF)'
-        : student.gender === 'female'
-          ? 'linear-gradient(180deg,#F0A5B7,#E8829B)'
-          : '#D8D3C6',
-  });
-  seat.appendChild(bar);
-
-  if (manual) {
-    seat.appendChild(
-      el('span', {
-        position: 'absolute',
-        right: '5px',
-        top: '5px',
-        width: '6px',
-        height: '6px',
-        borderRadius: '50%',
-        backgroundColor: '#F2A65A',
-      }),
-    );
-  }
-
-  const nameRow = el('div', {
     display: 'flex',
     alignItems: 'center',
-    gap: '4px',
-    marginBottom: '4px',
+    justifyContent: 'center',
+    padding: '0 6px',
+    overflow: 'hidden',
   });
-  nameRow.appendChild(
+  seat.appendChild(
     el(
       'span',
       {
-        fontSize: '13.5px',
+        fontSize: `${nameSize}px`,
         fontWeight: '600',
         color: '#1b1e25',
+        letterSpacing: '0.01em',
         whiteSpace: 'nowrap',
         overflow: 'hidden',
         textOverflow: 'ellipsis',
+        textAlign: 'center',
       },
       student.name,
     ),
   );
-  if (student.fixedSlotId) {
-    nameRow.appendChild(
-      el('span', {
-        fontSize: '9px',
-        color: '#3D5AFE',
-        flexShrink: '0',
-      }, '●'),
-    );
-  }
-  seat.appendChild(nameRow);
-
-  const metaRow = el('div', {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '5px',
-  });
-  if (student.height !== undefined) {
-    metaRow.appendChild(
-      el(
-        'span',
-        {
-          fontSize: '9.5px',
-          fontWeight: '500',
-          color: '#b0722a',
-          backgroundColor: '#fdf1e3',
-          borderRadius: '4px',
-          padding: '1px 4px',
-          lineHeight: '1.4',
-        },
-        String(student.height),
-      ),
-    );
-  }
-  metaRow.appendChild(
-    el(
-      'span',
-      {
-        fontSize: '9px',
-        color: '#6c7280',
-        whiteSpace: 'nowrap',
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-      },
-      student.studentNo,
-    ),
-  );
-
-  const tags = [...new Map(student.traits.map((t) => [t.text, t])).values()];
-  const dots = el('span', {
-    marginLeft: 'auto',
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: '3px',
-    flexShrink: '0',
-  });
-  for (const tag of tags.slice(0, 3)) {
-    dots.appendChild(
-      el('span', {
-        width: '5px',
-        height: '5px',
-        borderRadius: '50%',
-        backgroundColor: CATEGORY_COLOR[tag.category] ?? CATEGORY_COLOR.other,
-      }),
-    );
-  }
-  metaRow.appendChild(dots);
-  seat.appendChild(metaRow);
-
   return seat;
 }
 
@@ -237,46 +206,54 @@ function buildExportSheet(options: {
   layout: LayoutConfig;
   students: Student[];
   assignment: Assignment;
-  manualSlots: Record<string, true>;
   view: ViewMode;
-  background: Background;
+  pageColor: string;
+  transparent: boolean;
+  fontFamily: string;
+  nameSize: number | null;
   header: boolean;
 }) {
-  const { layout, students, assignment, manualSlots, view, background, header } = options;
+  const { layout, students, assignment, view, pageColor, transparent, header, fontFamily } =
+    options;
   const slots = buildSlots(layout);
   const studentById = new Map(students.map((s) => [s.id, s]));
-  const bg =
-    background === 'transparent' ? 'transparent' : background === 'white' ? '#FFFFFF' : '#F3F1EA';
+  const auto = computeMetrics(layout, header);
+  const metrics = options.nameSize ? { ...auto, nameSize: options.nameSize } : auto;
+  const { aisle, rowGap, pageW, pageH } = metrics;
+  const bg = transparent ? 'transparent' : pageColor;
+  const frontAtTop = view === 'student';
+  const doorOnRight = view === 'student';
 
   const sheet = el('div', {
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
-    width: 'max-content',
-    padding: '24px 34px 30px',
+    width: `${pageW}px`,
+    minHeight: `${pageH}px`,
+    padding: '32px',
     boxSizing: 'border-box',
-    borderRadius: '26px',
-    border: background === 'transparent' ? '1px solid transparent' : '1px solid #e6e2d8',
+    borderRadius: '24px',
+    border: transparent ? '1px solid transparent' : '1px solid #e6e2d8',
     background: bg,
-    fontFamily: '"HarmonyOS Sans SC", "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif',
+    fontFamily,
   });
 
   if (header) {
     const head = el('div', {
       alignSelf: 'stretch',
-      marginBottom: '16px',
+      marginBottom: '14px',
     });
     head.appendChild(
       el(
         'div',
-        { fontSize: '20px', fontWeight: '600', color: '#1b1e25', letterSpacing: '-0.01em' },
+        { fontSize: '22px', fontWeight: '600', color: '#1b1e25', letterSpacing: '-0.01em' },
         options.className,
       ),
     );
     head.appendChild(
       el(
         'div',
-        { marginTop: '4px', fontSize: '11px', color: '#6c7280' },
+        { marginTop: '5px', fontSize: '10.5px', color: '#6c7280', letterSpacing: '0.04em' },
         options.subtitle,
       ),
     );
@@ -288,22 +265,25 @@ function buildExportSheet(options: {
       display: 'flex',
       justifyContent: 'center',
       width: '100%',
-      margin: '6px 0 12px',
+      margin: '4px 0 10px',
+      flexShrink: '0',
     });
     wrap.appendChild(
       el(
         'div',
         {
-          width: '380px',
+          width: '360px',
           height: '40px',
-          borderRadius: '12px',
+          borderRadius: '10px',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          color: 'rgba(255,255,255,0.9)',
+          color: 'rgba(255,255,255,0.92)',
           fontSize: '10px',
           letterSpacing: '0.5em',
           background: 'linear-gradient(180deg, #262b35 0%, #1c1f26 100%)',
+          boxShadow: '0 6px 16px rgba(28,31,38,0.18)',
+          transform: doorOnRight ? 'translateX(-28px)' : 'translateX(28px)',
         },
         '讲 台',
       ),
@@ -311,13 +291,66 @@ function buildExportSheet(options: {
     return wrap;
   };
 
-  if (view === 'student') sheet.appendChild(podium());
+  const doorBadge = (label: string, front: boolean) =>
+    el(
+      'div',
+      {
+        fontSize: '10px',
+        letterSpacing: '0.09em',
+        color: front ? '#3b4a7a' : '#6f6a5f',
+        border: '1px solid #e3ddcf',
+        borderLeft: `3px solid ${front ? '#3D5AFE' : '#b9b3a5'}`,
+        backgroundColor: '#fffdf8',
+        borderRadius: '8px',
+        padding: '6px 2px',
+        textAlign: 'center',
+        boxShadow: '0 1px 2px rgba(16,24,40,0.04)',
+      },
+      label,
+    );
+
+  const gridHeight =
+    layout.rows * (metrics.seatH + (layout.deskType === 'double' ? 10 : 0)) +
+    (layout.rows - 1) * rowGap;
+
+  const doorRail = (frontAtTop: boolean) => {
+    const rail = el('div', {
+      width: '56px',
+      height: `${gridHeight + DOOR_OFFSET * 2}px`,
+      flexShrink: '0',
+      display: 'flex',
+      flexDirection: 'column',
+      justifyContent: 'space-between',
+      padding: '0 6px',
+      boxSizing: 'border-box',
+    });
+    rail.appendChild(frontAtTop ? doorBadge('前门', true) : doorBadge('后门', false));
+    rail.appendChild(frontAtTop ? doorBadge('后门', false) : doorBadge('前门', true));
+    return rail;
+  };
+
+  const aisleGap = () => {
+    const gap = el('div', {
+      width: `${aisle}px`,
+      alignSelf: 'stretch',
+      display: 'flex',
+      justifyContent: 'center',
+    });
+    gap.appendChild(
+      el('div', {
+        width: '0',
+        height: '100%',
+        borderLeft: '1px dashed #d8d1c2',
+      }),
+    );
+    return gap;
+  };
 
   const rows = el('div', {
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
-    gap: '12px',
+    gap: `${rowGap}px`,
   });
 
   const rowNumbers: number[] = [];
@@ -328,13 +361,14 @@ function buildExportSheet(options: {
     const rowWrap = el('div', {
       display: 'flex',
       alignItems: 'center',
-      gap: '22px',
+      gap: '0',
     });
     rowWrap.appendChild(
       el(
         'span',
         {
-          width: '18px',
+          width: '22px',
+          marginRight: '10px',
           textAlign: 'center',
           fontSize: '9px',
           color: '#a9a396',
@@ -348,7 +382,8 @@ function buildExportSheet(options: {
     for (let g = 1; g <= layout.groups; g++) groupNumbers.push(g);
     if (view === 'teacher') groupNumbers.reverse();
 
-    for (const group of groupNumbers) {
+    groupNumbers.forEach((group, index) => {
+      if (index > 0) rowWrap.appendChild(aisleGap());
       const groupSlots = slots
         .filter((s) => s.row === row && s.group === group)
         .sort((a, b) => a.indexInGroup - b.indexInGroup);
@@ -356,39 +391,62 @@ function buildExportSheet(options: {
 
       const desk = el('div', {
         display: 'flex',
-        gap: layout.deskType === 'double' ? '8px' : '0',
-        padding: layout.deskType === 'double' ? '5px' : '0',
-        borderRadius: layout.deskType === 'double' ? '16px' : '0',
-        border: layout.deskType === 'double' ? '1px solid #e6e2d8' : 'none',
+        gap: layout.deskType === 'double' ? '6px' : '0',
+        padding: layout.deskType === 'double' ? '4px' : '0',
+        borderRadius: layout.deskType === 'double' ? '14px' : '0',
+        border: layout.deskType === 'double' ? '1px solid #e8e3d6' : 'none',
         backgroundColor:
-          layout.deskType === 'double' ? 'rgba(255,255,255,0.4)' : 'transparent',
+          layout.deskType === 'double' ? 'rgba(255,255,255,0.45)' : 'transparent',
       });
 
       for (const slot of groupSlots) {
         const studentId = assignment[slot.id];
         desk.appendChild(
-          buildSeat(slot, studentId ? studentById.get(studentId) : undefined, !!manualSlots[slot.id]),
+          buildSeat(slot, studentId ? studentById.get(studentId) : undefined, metrics),
         );
       }
       rowWrap.appendChild(desk);
-    }
+    });
     rows.appendChild(rowWrap);
   }
 
-  sheet.appendChild(rows);
+  const gridWrap = el('div', {
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'center',
+  });
+  gridWrap.appendChild(rows);
 
-  if (view === 'teacher') sheet.appendChild(podium());
+  const classroom = el('div', {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+    flex: '1',
+    margin: '4px 0',
+  });
+  if (!doorOnRight) classroom.appendChild(doorRail(frontAtTop));
+  classroom.appendChild(gridWrap);
+  if (doorOnRight) classroom.appendChild(doorRail(frontAtTop));
+
+  if (frontAtTop) sheet.appendChild(podium());
+  sheet.appendChild(classroom);
+  if (!frontAtTop) sheet.appendChild(podium());
 
   sheet.appendChild(
     el(
       'div',
       {
-        marginTop: '12px',
+        marginTop: '8px',
+        alignSelf: 'stretch',
+        display: 'flex',
+        justifyContent: 'center',
         fontSize: '9.5px',
-        color: '#a9a396',
-        letterSpacing: '0.14em',
+        color: '#a09a8c',
+        letterSpacing: '0.06em',
+        flexShrink: '0',
       },
-      `${layout.deskType === 'double' ? '双人桌' : '单人桌'} · ${layout.groups} 组 · ${layout.rows} 排 · ${totalCols(layout)} 列 · ${students.length} 人`,
+      `虚线为过道 · 前门/后门位于讲台同侧 · ${layout.deskType === 'double' ? '双人桌' : '单人桌'} · ${layout.groups} 组 · ${layout.rows} 排 · ${totalCols(layout)} 列 · ${students.length} 人`,
     ),
   );
 
@@ -430,6 +488,42 @@ async function rasterize(
   return type === 'image/jpeg' ? canvas.toDataURL(type, 0.95) : canvas.toDataURL(type);
 }
 
+/** 实时缩略预览：直接挂载真实导出画布，按容器宽度等比缩放 */
+function SheetPreview({ sheet, maxHeight }: { sheet: HTMLElement; maxHeight?: number }) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const [height, setHeight] = useState(200);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const stage = document.createElement('div');
+    stage.style.cssText = 'position:absolute;top:0;left:0;transform-origin:top left;';
+    stage.appendChild(sheet);
+    host.appendChild(stage);
+
+    const update = () => {
+      const naturalW = sheet.offsetWidth || 1;
+      const naturalH = sheet.offsetHeight || 1;
+      const byWidth = host.clientWidth / naturalW;
+      const byHeight = maxHeight ? maxHeight / naturalH : byWidth;
+      const nextScale = Math.min(byWidth, byHeight);
+      stage.style.left = `${Math.max(0, (host.clientWidth - naturalW * nextScale) / 2)}px`;
+      stage.style.transform = `scale(${nextScale})`;
+      const nextHeight = Math.max(1, Math.round(naturalH * nextScale));
+      setHeight((prev) => (prev === nextHeight ? prev : nextHeight));
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(host);
+    return () => {
+      observer.disconnect();
+      stage.remove();
+    };
+  }, [sheet, maxHeight]);
+
+  return <div ref={hostRef} className="relative w-full overflow-hidden" style={{ height }} />;
+}
+
 export function ExportDialog() {
   const open = useAppStore((s) => s.exportOpen);
   const setExportOpen = useAppStore((s) => s.setExportOpen);
@@ -439,19 +533,59 @@ export function ExportDialog() {
   const layout = useAppStore((s) => s.layout);
   const students = useAppStore((s) => s.students);
   const assignment = useAppStore((s) => s.assignment);
-  const manualSlots = useAppStore((s) => s.manualSlots);
 
   const [format, setFormat] = useState<Format>('png');
-  const [scale, setScale] = useState('2');
-  const [background, setBackground] = useState<Background>('paper');
+  const [pageColor, setPageColor] = useState(PAGE_COLORS[0].color);
+  const [transparent, setTransparent] = useState(false);
+  const [font, setFont] = useState<FontKey>('system');
+  const [nameSize, setNameSize] = useState<number | null>(null);
   const [header, setHeader] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!open) setExpanded(false);
+  }, [open]);
 
   const stamp = fileStamp();
   const filename = `${className.replace(/[\\/:*?"<>|]/g, '_')}_座位表_${stamp}.${format}`;
   const viewLabel = view === 'teacher' ? '讲台视角' : '学生视角';
   const deskLabel = layout.deskType === 'double' ? '双人桌' : '单人桌';
   const subtitle = `${stamp.slice(0, 4)}-${stamp.slice(4, 6)}-${stamp.slice(6, 8)} · ${viewLabel} · ${deskLabel} ${layout.rows} 排 × ${layout.groups} 组 · ${students.length} 人`;
+
+  const autoNameSize = useMemo(() => computeMetrics(layout, header).nameSize, [layout, header]);
+  const fontSize = nameSize ?? autoNameSize;
+  const fontStack = FONTS.find((f) => f.value === font)?.stack ?? FONTS[0].stack;
+
+  const sheet = useMemo(
+    () =>
+      buildExportSheet({
+        className,
+        subtitle,
+        layout,
+        students,
+        assignment,
+        view,
+        pageColor,
+        transparent,
+        fontFamily: fontStack,
+        nameSize,
+        header,
+      }),
+    [
+      className,
+      subtitle,
+      layout,
+      students,
+      assignment,
+      view,
+      pageColor,
+      transparent,
+      fontStack,
+      nameSize,
+      header,
+    ],
+  );
 
   const handleExport = async () => {
     if (!Object.keys(assignment).length) {
@@ -461,27 +595,28 @@ export function ExportDialog() {
     setBusy(true);
     const stage = document.createElement('div');
     stage.style.cssText = 'position:fixed;left:-100000px;top:0;pointer-events:none;z-index:-1;';
-    const sheet = buildExportSheet({
+    const exportSheet = buildExportSheet({
       className,
       subtitle,
       layout,
       students,
       assignment,
-      manualSlots,
       view,
-      background,
+      pageColor,
+      transparent,
+      fontFamily: fontStack,
+      nameSize,
       header,
     });
-    stage.appendChild(sheet);
+    stage.appendChild(exportSheet);
     document.body.appendChild(stage);
     try {
-      const bgColor =
-        background === 'paper' ? '#F3F1EA' : background === 'white' ? '#FFFFFF' : undefined;
+      const bgColor = transparent ? undefined : pageColor;
       // PDF 用 JPEG 内嵌：jsPDF 处理大尺寸 PNG 会同步解压重编码，耗时不可接受
       const dataUrl =
         format === 'png'
-          ? await rasterize(sheet, Number(scale), bgColor)
-          : await rasterize(sheet, Number(scale), bgColor ?? '#FFFFFF', 'image/jpeg');
+          ? await rasterize(exportSheet, 2, bgColor)
+          : await rasterize(exportSheet, 2, bgColor ?? '#FFFFFF', 'image/jpeg');
 
       let save: () => Promise<void>;
       if (format === 'png') {
@@ -521,162 +656,249 @@ export function ExportDialog() {
   };
 
   return (
-    <Modal
-      open={open}
-      onClose={() => setExportOpen(false)}
-      title="导出座位表"
-      subtitle="按当前视角与布局生成图片，文件名自动带上班级与日期"
-      width={600}
-      footer={
-        <>
-          <button className="btn btn-ghost" onClick={() => setExportOpen(false)}>
-            取消
-          </button>
-          <button
-            className="btn btn-primary"
-            onClick={handleExport}
-            disabled={busy}
-            style={{ opacity: busy ? 0.75 : 1 }}
-          >
-            {busy ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-            {busy ? '正在生成…' : `导出 ${format.toUpperCase()}`}
-          </button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-5">
-        <div className="grid grid-cols-2 gap-3">
-          {(
-            [
-              { value: 'png' as Format, label: '高清 PNG', desc: '发群 / 插图，背景可选', icon: FileImage },
-              { value: 'pdf' as Format, label: '打印 PDF', desc: 'A4 自动排版，适合打印', icon: FileText },
-            ]
-          ).map((item) => {
-            const Icon = item.icon;
-            const active = format === item.value;
-            return (
-              <button
-                key={item.value}
-                type="button"
-                onClick={() => setFormat(item.value)}
-                className={clsx(
-                  'flex items-start gap-3 rounded-[14px] border px-3.5 py-3 text-left transition-all',
-                  active
-                    ? 'border-[rgba(61,90,254,0.5)] bg-primary-soft shadow-[0_6px_18px_rgba(61,90,254,0.12)]'
-                    : 'border-line bg-white hover:border-line-strong',
-                )}
-              >
-                <span
-                  className={clsx(
-                    'grid h-9 w-9 shrink-0 place-items-center rounded-[10px]',
-                    active ? 'bg-white text-primary' : 'bg-[#f5f3ec] text-muted-foreground',
-                  )}
-                >
-                  <Icon size={17} />
-                </span>
-                <span>
-                  <span className="block text-[12.5px] font-semibold">{item.label}</span>
-                  <span className="mt-0.5 block text-[11px] leading-snug text-muted-foreground">{item.desc}</span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="grid grid-cols-2 gap-5">
-          <div className="flex flex-col gap-1.5">
-            <span className="field-label">清晰度</span>
-            <Segmented
-              value={scale}
-              onChange={setScale}
-              options={[
-                { value: '1', label: '1x' },
-                { value: '2', label: '2x' },
-                { value: '3', label: '3x' },
-              ]}
-            />
-            <span className="text-[11px] text-muted-foreground">3x 适合打印，文件体积更大</span>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <span className="field-label">背景</span>
-            <div className="flex items-center gap-1.5">
-              {BACKGROUNDS.map((item) => (
+    <>
+      <Modal
+        open={open}
+        onClose={() => setExportOpen(false)}
+        title="导出座位表"
+        subtitle="按当前视角与布局生成图片，文件名自动带上班级与日期"
+        width={600}
+        footer={
+          <>
+            <button className="btn btn-ghost" onClick={() => setExportOpen(false)}>
+              取消
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={handleExport}
+              disabled={busy}
+              style={{ opacity: busy ? 0.75 : 1 }}
+            >
+              {busy ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+              {busy ? '正在生成…' : `导出 ${format.toUpperCase()}`}
+            </button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-5">
+          <div className="grid grid-cols-2 gap-3">
+            {(
+              [
+                { value: 'png' as Format, label: '高清 PNG', desc: '发群 / 插图，背景可自定义', icon: FileImage },
+                { value: 'pdf' as Format, label: '打印 PDF', desc: 'A4 单页自适应，80 人内可打印', icon: FileText },
+              ]
+            ).map((item) => {
+              const Icon = item.icon;
+              const active = format === item.value;
+              return (
                 <button
                   key={item.value}
                   type="button"
-                  onClick={() => setBackground(item.value)}
+                  onClick={() => setFormat(item.value)}
                   className={clsx(
-                    'flex h-[30px] items-center gap-1.5 rounded-[8px] border px-2 text-[11.5px] transition-colors',
-                    background === item.value
-                      ? 'border-[rgba(61,90,254,0.5)] bg-white text-ink'
-                      : 'border-line bg-white/60 text-muted-foreground hover:text-ink',
+                    'flex items-start gap-3 rounded-[14px] border px-3.5 py-3 text-left transition-all',
+                    active
+                      ? 'border-[rgba(61,90,254,0.5)] bg-primary-soft shadow-[0_6px_18px_rgba(61,90,254,0.12)]'
+                      : 'border-line bg-white hover:border-line-strong',
                   )}
                 >
                   <span
-                    className="h-3.5 w-3.5 rounded-[4px] border border-line-strong"
-                    style={{
-                      background:
-                        item.color === 'transparent'
-                          ? 'repeating-conic-gradient(#e9e5da 0% 25%, #fff 0% 50%) 50% / 6px 6px'
-                          : item.color,
-                    }}
-                  />
-                  {item.label}
+                    className={clsx(
+                      'grid h-9 w-9 shrink-0 place-items-center rounded-[10px]',
+                      active ? 'bg-white text-primary' : 'bg-[#f5f3ec] text-muted-foreground',
+                    )}
+                  >
+                    <Icon size={17} />
+                  </span>
+                  <span>
+                    <span className="block text-[12.5px] font-semibold">{item.label}</span>
+                    <span className="mt-0.5 block text-[11px] leading-snug text-muted-foreground">{item.desc}</span>
+                  </span>
                 </button>
-              ))}
-            </div>
-            <span className="text-[11px] text-muted-foreground">透明背景仅 PNG 生效</span>
+              );
+            })}
           </div>
-        </div>
 
-        <div className="flex items-center justify-between rounded-[12px] border border-line bg-surface-warm px-3.5 py-2.5">
-          <div>
-            <div className="text-[12.5px] font-medium">添加标题栏</div>
-            <div className="mt-0.5 text-[11px] text-muted-foreground">班级名 + 日期 + 视角 + 布局说明</div>
-          </div>
-          <Switch checked={header} onChange={setHeader} />
-        </div>
-
-        <div className="overflow-hidden rounded-[14px] border border-line bg-[#faf9f5]">
-          <div className="flex items-center justify-between border-b border-line px-3.5 py-2 text-[10.5px] text-muted-foreground">
-            <span>导出预览</span>
-            <span className="tabular-nums">{format.toUpperCase()} · {scale}x</span>
-          </div>
-          <div
-            className="m-3 rounded-[10px] border border-line px-4 py-3"
-            style={{
-              background:
-                background === 'transparent'
-                  ? 'repeating-conic-gradient(#e9e5da 0% 25%, #fff 0% 50%) 50% / 12px 12px'
-                  : background === 'white'
-                    ? '#fff'
-                    : '#F3F1EA',
-            }}
-          >
-            {header && (
-              <div className="mb-2.5">
-                <div className="text-[13px] font-semibold">{className}</div>
-                <div className="mt-0.5 text-[9.5px] text-muted-foreground">{subtitle}</div>
+          <div className="grid grid-cols-2 gap-5">
+            <div className="flex flex-col gap-1.5">
+              <span className="field-label">页面颜色</span>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {PAGE_COLORS.map((item) => {
+                  const active = !transparent && pageColor.toLowerCase() === item.color.toLowerCase();
+                  return (
+                    <button
+                      key={item.color}
+                      type="button"
+                      onClick={() => {
+                        setPageColor(item.color);
+                        setTransparent(false);
+                      }}
+                      className={clsx(
+                        'flex h-[30px] items-center gap-1.5 rounded-[8px] border px-2 text-[11.5px] transition-colors',
+                        active
+                          ? 'border-[rgba(61,90,254,0.5)] bg-white text-ink'
+                          : 'border-line bg-white/60 text-muted-foreground hover:text-ink',
+                      )}
+                    >
+                      <span
+                        className="h-3.5 w-3.5 rounded-[4px] border border-line-strong"
+                        style={{ background: item.color }}
+                      />
+                      {item.label}
+                    </button>
+                  );
+                })}
+                <label
+                  className={clsx(
+                    'flex h-[30px] cursor-pointer items-center gap-1.5 rounded-[8px] border px-2 text-[11.5px] transition-colors',
+                    transparent
+                      ? 'border-line bg-white/60 text-muted-foreground hover:text-ink'
+                      : 'border-[rgba(61,90,254,0.5)] bg-white text-ink',
+                  )}
+                  title="自定义页面颜色"
+                >
+                  <input
+                    type="color"
+                    value={pageColor}
+                    onChange={(e) => {
+                      setPageColor(e.target.value);
+                      setTransparent(false);
+                    }}
+                    className="h-4 w-4 cursor-pointer rounded-[3px] border-0 bg-transparent p-0"
+                  />
+                  自定义
+                </label>
               </div>
-            )}
-            <div className="grid grid-cols-6 gap-1 border-t border-dashed border-line-strong/70 pt-2.5">
-              {Array.from({ length: 18 }).map((_, i) => (
-                <div
-                  key={i}
-                  className="h-[13px] rounded-[3px] border border-[#e3ded1]"
-                  style={{
-                    background:
-                      i % 7 === 5 ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.92)',
-                  }}
-                />
-              ))}
+              <div className="flex items-center gap-1.5">
+                <Switch checked={transparent} onChange={setTransparent} />
+                <span className="text-[11px] text-muted-foreground">透明背景（仅 PNG 生效）</span>
+              </div>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <span className="field-label">字体类型</span>
+              <select
+                className="input"
+                value={font}
+                onChange={(e) => setFont(e.target.value as FontKey)}
+              >
+                {FONTS.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+              <span className="text-[11px] text-muted-foreground">应用于整张座位表的文字</span>
             </div>
           </div>
-          <div className="px-3.5 pb-3 text-[11px] text-muted-foreground">
-            文件名：<span className="font-medium text-ink">{filename}</span>
+
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <span className="field-label">姓名字号</span>
+              <Segmented
+                value={nameSize === null ? 'auto' : 'custom'}
+                onChange={(next) => setNameSize(next === 'auto' ? null : autoNameSize)}
+                options={[
+                  { value: 'auto', label: '自适应' },
+                  { value: 'custom', label: '自定义' },
+                ]}
+              />
+            </div>
+            <div className="flex items-center gap-3">
+              <input
+                type="range"
+                min={8}
+                max={28}
+                step={1}
+                value={fontSize}
+                onChange={(e) => setNameSize(Number(e.target.value))}
+                className="slider"
+                style={{ ['--fill' as any]: `${((fontSize - 8) / 20) * 100}%` }}
+              />
+              <span className="w-10 shrink-0 text-right text-[12px] font-medium tabular-nums text-ink">
+                {fontSize}px
+              </span>
+              {nameSize !== null && (
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title="恢复自适应字号"
+                  onClick={() => setNameSize(null)}
+                >
+                  <RotateCcw size={13} />
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between rounded-[12px] border border-line bg-surface-warm px-3.5 py-2.5">
+            <div>
+              <div className="text-[12.5px] font-medium">添加标题栏</div>
+              <div className="mt-0.5 text-[11px] text-muted-foreground">班级名 + 日期 + 视角 + 布局说明</div>
+            </div>
+            <Switch checked={header} onChange={setHeader} />
+          </div>
+
+          <div className="overflow-hidden rounded-[14px] border border-line bg-[#faf9f5]">
+            <div className="flex items-center justify-between border-b border-line px-3.5 py-2 text-[10.5px] text-muted-foreground">
+              <span>导出预览 · {format.toUpperCase()} · 2x</span>
+              <button
+                type="button"
+                onClick={() => setExpanded(true)}
+                className="flex items-center gap-1 rounded-[6px] px-1.5 py-0.5 transition-colors hover:bg-black/5 hover:text-ink"
+              >
+                <Maximize2 size={11} /> 展开
+              </button>
+            </div>
+            <div className="p-3">
+              <div
+                className="overflow-hidden rounded-[10px]"
+                style={{ background: transparent ? CHECKER : undefined }}
+              >
+                {expanded ? (
+                  <div className="grid h-[180px] place-items-center text-[11px] text-muted-foreground">
+                    预览已展开
+                  </div>
+                ) : (
+                  <SheetPreview sheet={sheet} />
+                )}
+              </div>
+            </div>
+            <div className="px-3.5 pb-3 text-[11px] text-muted-foreground">
+              文件名：<span className="font-medium text-ink">{filename}</span>
+            </div>
           </div>
         </div>
-      </div>
-    </Modal>
+      </Modal>
+
+      {expanded &&
+        createPortal(
+          <div className="fixed inset-0 z-[120] flex flex-col bg-[rgba(18,20,26,0.66)] backdrop-blur-[2px]">
+            <div className="flex items-center justify-between px-6 py-4">
+              <div className="text-white">
+                <div className="text-[14px] font-semibold">导出预览</div>
+                <div className="mt-0.5 text-[11px] text-white/55">
+                  {format.toUpperCase()} · 2x · {transparent ? '透明背景' : pageColor} · {fontSize}px
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setExpanded(false)}
+                className="flex h-8 items-center gap-1.5 rounded-[9px] bg-white/10 px-3 text-[12px] text-white transition-colors hover:bg-white/20"
+              >
+                <Minimize2 size={13} /> 收起
+              </button>
+            </div>
+            <div className="scroll-thin min-h-0 flex-1 overflow-auto px-6 pb-6">
+              <div
+                className="mx-auto w-full max-w-[1440px] overflow-hidden rounded-[16px] shadow-[0_30px_80px_rgba(0,0,0,0.35)]"
+                style={{ background: transparent ? CHECKER : undefined }}
+              >
+                <SheetPreview sheet={sheet} maxHeight={window.innerHeight - 170} />
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }
