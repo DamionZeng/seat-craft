@@ -1,7 +1,7 @@
 {
   "name": "seatcraft",
   "private": true,
-  "version": "0.1.3",
+  "version": "0.1.4",
   "type": "module",
   "description": "智能排座系统 — 导入名单、选布局、按规则智能排座、拖拽微调",
   "scripts": {
